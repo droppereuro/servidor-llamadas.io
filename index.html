@@ -17,15 +17,27 @@
         video { width: 100%; height: 50%; object-fit: cover; background: #1e1e1e; }
         #remoteVideo { height: 65%; }
         #localVideo { height: 35%; border-top: 2px solid #333; }
+        
+        /* Temporizador elegante arriba en la pantalla */
+        .timer-container {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7); padding: 8px 16px; border-radius: 20px;
+            font-size: 14px; font-weight: bold; letter-spacing: 1px; display: none; z-index: 10;
+            border: 1px solid #444; color: #2ed573;
+        }
+
         .controls {
             padding: 20px; display: flex; justify-content: center; gap: 10px;
             background: #1a1a1a; position: absolute; bottom: 0; width: 100%; box-sizing: border-box;
         }
         button {
             padding: 15px 30px; border: none; border-radius: 25px; font-weight: bold; font-size: 16px; cursor: pointer;
+            transition: all 0.2s ease;
         }
         .btn-user { background: #333; color: white; border: 1px solid #555; }
-        .btn-call { background: #2ed573; color: white; width: 100%; }
+        .btn-call { background: #2ed573; color: white; flex: 2; }
+        .btn-mute { background: #ff4757; color: white; flex: 1; display: none; }
+        .btn-mute.muted { background: #ffa502; color: black; }
     </style>
 </head>
 <body>
@@ -39,15 +51,16 @@
 
     <!-- 2. Pantalla de la Llamada -->
     <div id="callScreen" class="call-screen">
+        <div id="timer" class="timer-container">TIEMPO: 00:00</div>
         <video id="remoteVideo" autoplay playsinline></video>
         <video id="localVideo" autoplay playsinline muted></video>
         <div class="controls">
+            <button class="btn-mute" id="btnMute">Silenciar</button>
             <button class="btn-call" id="btnAccion">Iniciar Cámara y Llamar</button>
         </div>
     </div>
 
     <script>
-        // REEMPLAZA ESTO: La URL de tu servidor Node.js cuando lo subas a Render o Railway
         const SERVIDOR_URL = "https://servidor-llamadas-zg5q.onrender.com"; 
         
         let socket;
@@ -55,6 +68,9 @@
         let localStream;
         let miUsuario = "";
         let miDestinatario = "";
+        let tiempoIntervalo;
+        let segundosTranscurridos = 0;
+        let microfonoActivo = true;
 
         const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
@@ -62,79 +78,141 @@
             miUsuario = usuario;
             miDestinatario = (usuario === 'daniel') ? 'gisel' : 'daniel';
 
-            // Ocultar pantalla de login, mostrar pantalla de llamada
             document.getElementById('setupScreen').style.display = 'none';
             document.getElementById('callScreen').style.display = 'flex';
-
-            // Ajustar texto del botón según quién seas
             document.getElementById('btnAccion').innerText = `Llamar a ${miDestinatario.toUpperCase()}`;
 
-            // Conectar al servidor de señalización
             socket = io(SERVIDOR_URL);
             socket.emit('register', miUsuario);
 
-            // Escuchar señales entrantes
             configurarSenales();
         }
 
-        async function arrancarMedios() {
-            if (!localStream) {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                document.getElementById('localVideo').srcObject = localStream;
-            }
+        // Función adaptada para no crashearse si no hay webcam pero sí micro
+        function solicitarMedios(restricciones, callbackExito) {
+            navigator.mediaDevices.getUserMedia(restricciones)
+                .then(stream => {
+                    localStream = stream;
+                    document.getElementById('localVideo').srcObject = stream;
+                    document.getElementById('btnMute').style.display = 'block'; // Mostrar botón de silenciar
+                    callbackExito();
+                })
+                .catch(error => {
+                    console.warn("Fallo pidiendo hardware completo:", error.name);
+                    if (restricciones.video) {
+                        // Reintento automático solo con audio/micrófono si falla el vídeo
+                        solicitarMedios({ video: false, audio: true }, callbackExito);
+                    } else {
+                        alert("Error: No se ha detectado ningún micrófono activo en este dispositivo.");
+                    }
+                });
         }
 
-        document.getElementById('btnAccion').addEventListener('click', async () => {
-            await arrancarMedios();
-            
-            peerConnection = new RTCPeerConnection(rtcConfig);
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        // Lógica del temporizador de llamada
+        function iniciarTemporizador() {
+            if (tiempoIntervalo) clearInterval(tiempoIntervalo);
+            segundosTranscurridos = 0;
+            const contenedorTimer = document.getElementById('timer');
+            contenedorTimer.style.display = 'block';
 
-            peerConnection.onicecandidate = event => {
-                if (event.candidate) {
-                    socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+            tiempoIntervalo = setInterval(() => {
+                segundosTranscurridos++;
+                const mins = String(Math.floor(segundosTranscurridos / 60)).padStart(2, '0');
+                const secs = String(segundosTranscurridos % 60).padStart(2, '0');
+                contenedorTimer.innerText = `EN LLAMADA: ${mins}:${secs}`;
+            }, 1000);
+        }
+
+        // Acción del botón Silenciar / Mutear micro
+        document.getElementById('btnMute').addEventListener('click', () => {
+            if (localStream) {
+                const audioTracks = localStream.getAudioTracks();
+                if (audioTracks.length > 0) {
+                    microfonoActivo = !microfonoActivo;
+                    audioTracks[0].enabled = microfonoActivo; // Activa o desactiva la pista
+                    
+                    const btnMute = document.getElementById('btnMute');
+                    if (microfonoActivo) {
+                        btnMute.innerText = "Silenciar";
+                        btnMute.classList.remove('muted');
+                    } else {
+                        btnMute.innerText = "Mutear activado";
+                        btnMute.classList.add('muted');
+                    }
                 }
-            };
+            }
+        });
 
-            peerConnection.ontrack = event => {
-                document.getElementById('remoteVideo').srcObject = event.streams[0];
-            };
+        document.getElementById('btnAccion').addEventListener('click', () => {
+            solicitarMedios({ video: true, audio: true }, () => {
+                peerConnection = new RTCPeerConnection(rtcConfig);
+                
+                if (localStream) {
+                    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                }
 
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'offer', sdp: offer } });
+                peerConnection.onicecandidate = event => {
+                    if (event.candidate) {
+                        socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+                    }
+                };
+
+                peerConnection.ontrack = event => {
+                    document.getElementById('remoteVideo').srcObject = event.streams[0];
+                };
+
+                peerConnection.createOffer()
+                    .then(offer => peerConnection.setLocalDescription(offer))
+                    .then(() => {
+                        socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'offer', sdp: peerConnection.localDescription } });
+                        console.log("Oferta enviada.");
+                    })
+                    .catch(e => console.error(e));
+            });
         });
 
         function configurarSenales() {
-            socket.on('signaling-message', async ({ payload }) => {
+            socket.on('signaling-message', data => {
+                const payload = data.payload;
+                
                 if (payload.type === 'offer') {
-                    // Si recibes una llamada, primero necesitas activar tu propia cámara
-                    await arrancarMedios();
-                    
-                    peerConnection = new RTCPeerConnection(rtcConfig);
-                    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-                    peerConnection.onicecandidate = event => {
-                        if (event.candidate) {
-                            socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+                    solicitarMedios({ video: true, audio: true }, () => {
+                        peerConnection = new RTCPeerConnection(rtcConfig);
+                        
+                        if (localStream) {
+                            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
                         }
-                    };
 
-                    peerConnection.ontrack = event => {
-                        document.getElementById('remoteVideo').srcObject = event.streams[0];
-                    };
+                        peerConnection.onicecandidate = event => {
+                            if (event.candidate) {
+                                socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+                            }
+                        };
 
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    
-                    socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'answer', sdp: answer } });
+                        peerConnection.ontrack = event => {
+                            document.getElementById('remoteVideo').srcObject = event.streams[0];
+                        };
+
+                        peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp))
+                            .then(() => peerConnection.createAnswer())
+                            .then(answer => peerConnection.setLocalDescription(answer))
+                            .then(() => {
+                                socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'answer', sdp: peerConnection.localDescription } });
+                                iniciarTemporizador(); // Arranca el contador para quien recibe la llamada
+                            })
+                            .catch(e => console.error(e));
+                    });
                 } 
                 else if (payload.type === 'answer') {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp))
+                        .then(() => {
+                            iniciarTemporizador(); // Arranca el contador para quien inició la llamada
+                        })
+                        .catch(e => console.error(e));
                 } 
                 else if (payload.type === 'candidate' && peerConnection) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+                    peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate))
+                        .catch(e => console.error(e));
                 }
             });
         }
