@@ -18,7 +18,6 @@
         #remoteVideo { height: 65%; }
         #localVideo { height: 35%; border-top: 2px solid #333; }
         
-        /* Temporizador elegante arriba en la pantalla */
         .timer-container {
             position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
             background: rgba(0, 0, 0, 0.7); padding: 8px 16px; border-radius: 20px;
@@ -72,7 +71,14 @@
         let segundosTranscurridos = 0;
         let microfonoActivo = true;
 
-        const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+        // Lista extendida de servidores STUN para saltar firewalls de operadoras
+        const rtcConfig = { 
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
+            ] 
+        };
 
         function iniciarApp(usuario) {
             miUsuario = usuario;
@@ -88,27 +94,25 @@
             configurarSenales();
         }
 
-        // Función adaptada para no crashearse si no hay webcam pero sí micro
+        // Corrección del error de sintaxis en los parámetros
         function solicitarMedios(restricciones, callbackExito) {
             navigator.mediaDevices.getUserMedia(restricciones)
                 .then(stream => {
                     localStream = stream;
                     document.getElementById('localVideo').srcObject = stream;
-                    document.getElementById('btnMute').style.display = 'block'; // Mostrar botón de silenciar
+                    document.getElementById('btnMute').style.display = 'block';
                     callbackExito();
                 })
                 .catch(error => {
                     console.warn("Fallo pidiendo hardware completo:", error.name);
                     if (restricciones.video) {
-                        // Reintento automático solo con audio/micrófono si falla el vídeo
                         solicitarMedios({ video: false, audio: true }, callbackExito);
                     } else {
-                        alert("Error: No se ha detectado ningún micrófono activo en este dispositivo.");
+                        alert("Error: No se ha detectado ningún micrófono activo.");
                     }
                 });
         }
 
-        // Lógica del temporizador de llamada
         function iniciarTemporizador() {
             if (tiempoIntervalo) clearInterval(tiempoIntervalo);
             segundosTranscurridos = 0;
@@ -123,13 +127,12 @@
             }, 1000);
         }
 
-        // Acción del botón Silenciar / Mutear micro
         document.getElementById('btnMute').addEventListener('click', () => {
             if (localStream) {
                 const audioTracks = localStream.getAudioTracks();
                 if (audioTracks.length > 0) {
                     microfonoActivo = !microfonoActivo;
-                    audioTracks[0].enabled = microfonoActivo; // Activa o desactiva la pista
+                    audioTracks[0].enabled = microfonoActivo;
                     
                     const btnMute = document.getElementById('btnMute');
                     if (microfonoActivo) {
@@ -165,7 +168,6 @@
                     .then(offer => peerConnection.setLocalDescription(offer))
                     .then(() => {
                         socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'offer', sdp: peerConnection.localDescription } });
-                        console.log("Oferta enviada.");
                     })
                     .catch(e => console.error(e));
             });
@@ -198,7 +200,7 @@
                             .then(answer => peerConnection.setLocalDescription(answer))
                             .then(() => {
                                 socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'answer', sdp: peerConnection.localDescription } });
-                                iniciarTemporizador(); // Arranca el contador para quien recibe la llamada
+                                iniciarTemporizador();
                             })
                             .catch(e => console.error(e));
                     });
@@ -206,7 +208,7 @@
                 else if (payload.type === 'answer') {
                     peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp))
                         .then(() => {
-                            iniciarTemporizador(); // Arranca el contador para quien inició la llamada
+                            iniciarTemporizador();
                         })
                         .catch(e => console.error(e));
                 } 
