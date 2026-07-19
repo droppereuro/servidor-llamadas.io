@@ -47,7 +47,6 @@
     </div>
 
     <script>
-        // URL del servidor de señalización en Render
         const SERVIDOR_URL = "https://servidor-llamadas-zg5q.onrender.com"; 
         
         let socket;
@@ -62,112 +61,160 @@
             miUsuario = usuario;
             miDestinatario = (usuario === 'daniel') ? 'gisel' : 'daniel';
 
-            // Ocultar pantalla de login, mostrar pantalla de llamada
             document.getElementById('setupScreen').style.display = 'none';
             document.getElementById('callScreen').style.display = 'flex';
-
-            // Ajustar texto del botón según quién seas
             document.getElementById('btnAccion').innerText = `Llamar a ${miDestinatario.toUpperCase()}`;
 
-            // Conectar al servidor de señalización
-            socket = io(SERVIDOR_URL);
+            console.log(`[PASO 1] Iniciando app como: ${miUsuario}. Destinatario configurado: ${miDestinatario}`);
+            alert(`Registrándote como ${miUsuario.toUpperCase()}. Conectando al servidor...`);
+
+            // Conectar al servidor de señalización con tiempos de espera forzados
+            socket = io(SERVIDOR_URL, {
+                timeout: 10000,
+                transports: ['websocket', 'polling']
+            });
             
             socket.on('connect', () => {
-                console.log("¡Conectado con éxito al servidor de Render!");
+                console.log("[PASO 2] ¡Conexión WebSocket establecida con éxito con Render!");
+                alert("¡Conectado al servidor de Render correctamente! Ya puedes llamar cuando el otro usuario esté listo.");
+                socket.emit('register', miUsuario);
             });
 
-            socket.emit('register', miUsuario);
+            socket.on('connect_error', (error) => {
+                console.error("[ERROR] No se pudo conectar al servidor de Render:", error);
+                alert("ERROR DE CONEXIÓN: El servidor de Render está dormido o apagado. Abre la URL del servidor en otra pestaña, espera a que cargue e intenta refrescar esta página.");
+            });
 
-            // Escuchar señales entrantes
             configurarSenales();
         }
 
-        async function arrancarMedios() {
-            if (!localStream) {
-                // Intento estándar: Cámara y micrófono activos
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                document.getElementById('localVideo').srcObject = localStream;
-            }
+        // Función directa para asegurar la compatibilidad con los permisos rígidos de iOS/Safari
+        function solicitarMedios(restricciones, callback Éxito) {
+            console.log("[PASO 3] Solicitando permisos de hardware al navegador con opciones:", restricciones);
+            
+            navigator.mediaDevices.getUserMedia(restricciones)
+                .then(stream => {
+                    console.log("[PASO 4] Permisos concedidos. Stream de vídeo/audio capturado.");
+                    localStream = stream;
+                    document.getElementById('localVideo').srcObject = stream;
+                    callbackÉxito();
+                })
+                .catch(error => {
+                    console.warn("[ADVERTENCIA] Error al pedir cámara/micro completo:", error.name);
+                    
+                    // Si falla el combo completo y tiene activado el vídeo, intentamos degradar a SOLO AUDIO automáticamente
+                    if (restricciones.video) {
+                        console.log("Intentando arrancar en modo de emergencia: SOLO AUDIO...");
+                        solicitarMedios({ video: false, audio: true }, callbackÉxito);
+                    } else {
+                        console.error("[CRÍTICO] El dispositivo no tiene ni micrófono ni cámara funcionales.");
+                        alert("ERROR DE HARDWARE: El navegador denegó el acceso o no detectó ningún micrófono ni cámara en este equipo.");
+                    }
+                });
         }
 
-        document.getElementById('btnAccion').addEventListener('click', async () => {
-            try {
-                await arrancarMedios();
-            } catch (error) {
-                console.warn("No se detectó hardware completo (cámara + micro). Reintentando solo audio...", error);
-                try {
-                    // Intento de emergencia si falta la webcam (típico de PC de torre)
-                    localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-                    document.getElementById('localVideo').srcObject = localStream;
-                } catch (e) {
-                    console.error("Tampoco hay micrófono disponible en este equipo.", e);
-                    alert("Error: No se ha detectado ningún dispositivo de audio o vídeo. Conecta un micrófono o prueba directamente desde el móvil.");
-                    return; 
-                }
-            }
-            
-            peerConnection = new RTCPeerConnection(rtcConfig);
-            
-            if (localStream) {
-                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        document.getElementById('btnAccion').addEventListener('click', () => {
+            if (!socket || !socket.connected) {
+                alert("No puedes llamar todavía: No estás conectado al servidor de Render.");
+                return;
             }
 
-            peerConnection.onicecandidate = event => {
-                if (event.candidate) {
-                    socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+            console.log("[ACCION] Se pulsó el botón de iniciar llamada.");
+            
+            solicitarMedios({ video: true, audio: true }, () => {
+                console.log("[PASO 5] Inicializando conexión WebRTC (RTCPeerConnection)...");
+                peerConnection = new RTCPeerConnection(rtcConfig);
+                
+                if (localStream) {
+                    localStream.getTracks().forEach(track => {
+                        peerConnection.addTrack(track, localStream);
+                        console.log(`-> Pista de audio/vídeo acoplada a WebRTC: ${track.kind}`);
+                    });
                 }
-            };
 
-            peerConnection.ontrack = event => {
-                document.getElementById('remoteVideo').srcObject = event.streams[0];
-            };
+                peerConnection.onicecandidate = event => {
+                    if (event.candidate) {
+                        console.log("[WEBRTC] Enviando candidato ICE al servidor...");
+                        socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+                    }
+                };
 
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'offer', sdp: offer } });
-            console.log("Oferta enviada. Conectando llamada...");
+                peerConnection.ontrack = event => {
+                    console.log("[WEBRTC] ¡Pista de vídeo remota recibida! Acoplando al recuadro superior.");
+                    document.getElementById('remoteVideo').srcObject = event.streams[0];
+                };
+
+                console.log("[PASO 6] Creando oferta de llamada (Offer SDP)...");
+                peerConnection.createOffer()
+                    .then(offer => {
+                        console.log("[PASO 7] Aplicando descripción local a la conexión...");
+                        return peerConnection.setLocalDescription(offer);
+                    })
+                    .then(() => {
+                        console.log(`[PASO 8] Enviando oferta SDP a través del servidor hacia: ${miDestinatario}`);
+                        socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'offer', sdp: peerConnection.localDescription } });
+                        alert(`Llamada enviada a ${miDestinatario.toUpperCase()}. Esperando a que acepte...`);
+                    })
+                    .catch(e => {
+                        console.error("[CRÍTICO] Fallo al generar el enlace WebRTC:", e);
+                        alert("Error interno al crear la oferta de la videollamada.");
+                    });
+            });
         });
 
         function configurarSenales() {
-            socket.on('signaling-message', async ({ payload }) => {
+            socket.on('signaling-message', data => {
+                const payload = data.payload;
+                console.log(`[SEÑAL RECIBIDA] Tipo de mensaje recibido del servidor: ${payload.type}`);
+                
                 if (payload.type === 'offer') {
-                    try {
-                        await arrancarMedios();
-                    } catch (err) {
-                        try {
-                            localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-                            document.getElementById('localVideo').srcObject = localStream;
-                        } catch (e) {
-                            console.error("No se pueden responder medios.", e);
-                        }
-                    }
+                    console.log("[WEBRTC] Detectada oferta entrante. Levantando llamada entrante...");
+                    alert(`¡${miDestinatario.toUpperCase()} te está llamando! Conectando...`);
                     
-                    peerConnection = new RTCPeerConnection(rtcConfig);
-                    if (localStream) {
-                        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-                    }
-
-                    peerConnection.onicecandidate = event => {
-                        if (event.candidate) {
-                            socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+                    solicitarMedios({ video: true, audio: true }, () => {
+                        peerConnection = new RTCPeerConnection(rtcConfig);
+                        
+                        if (localStream) {
+                            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
                         }
-                    };
 
-                    peerConnection.ontrack = event => {
-                        document.getElementById('remoteVideo').srcObject = event.streams[0];
-                    };
+                        peerConnection.onicecandidate = event => {
+                            if (event.candidate) {
+                                socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'candidate', candidate: event.candidate } });
+                            }
+                        };
 
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    
-                    socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'answer', sdp: answer } });
+                        peerConnection.ontrack = event => {
+                            document.getElementById('remoteVideo').srcObject = event.streams[0];
+                        };
+
+                        console.log("[WEBRTC] Procesando descripción remota recibida...");
+                        peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp))
+                            .then(() => {
+                                console.log("[WEBRTC] Generando respuesta de llamada (Answer SDP)...");
+                                return peerConnection.createAnswer();
+                            })
+                            .then(answer => {
+                                console.log("[WEBRTC] Seteando descripción local de respuesta...");
+                                return peerConnection.setLocalDescription(answer);
+                            })
+                            .then(() => {
+                                console.log("[WEBRTC] Enviando respuesta de vuelta al emisor...");
+                                socket.emit('relay-signaling', { target: miDestinatario, payload: { type: 'answer', sdp: peerConnection.localDescription } });
+                            })
+                            .catch(e => console.error("[ERROR] Fallo respondiendo la llamada WebRTC:", e));
+                    });
                 } 
                 else if (payload.type === 'answer') {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+                    console.log("[WEBRTC] Respuesta recibida del servidor. Enlazando flujos de datos definitivos...");
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp))
+                        .then(() => alert("¡Conexión establecida! Deberíais empezar a veros u oiros ya."))
+                        .catch(e => console.error("[ERROR] Fallo al procesar la Answer remota:", e));
                 } 
                 else if (payload.type === 'candidate' && peerConnection) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+                    console.log("[WEBRTC] Añadiendo candidato ICE remoto a la conexión...");
+                    peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate))
+                        .catch(e => console.error("[ERROR] Fallo al añadir el ICE candidate:", e));
                 }
             });
         }
