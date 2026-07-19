@@ -13,30 +13,35 @@
         .setup-screen {
             display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 20px;
         }
-        .call-screen { display: none; flex-direction: column; height: 100vh; position: relative; }
-        video { width: 100%; height: 50%; object-fit: cover; background: #1e1e1e; }
-        #remoteVideo { height: 65%; }
-        #localVideo { height: 35%; border-top: 2px solid #333; }
+        .call-screen { 
+            display: none; flex-direction: column; align-items: center; justify-content: center; flex: 1; position: relative; 
+        }
         
+        /* Interfaz estilo llamada telefónica */
+        .avatar-container {
+            width: 130px; height: 130px; background: #222; border: 2px solid #2ed573; 
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            font-size: 40px; margin-bottom: 20px; box-shadow: 0 0 20px rgba(46, 213, 115, 0.2);
+        }
+        .status-text { font-size: 18px; color: #aaa; margin-bottom: 5px; }
         .timer-container {
-            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.7); padding: 8px 16px; border-radius: 20px;
-            font-size: 14px; font-weight: bold; letter-spacing: 1px; display: none; z-index: 10;
-            border: 1px solid #444; color: #2ed573;
+            font-size: 24px; font-weight: bold; color: #2ed573; margin-bottom: 40px; letter-spacing: 1px;
         }
 
         .controls {
-            padding: 20px; display: flex; justify-content: center; gap: 10px;
-            background: #1a1a1a; position: absolute; bottom: 0; width: 100%; box-sizing: border-box;
+            display: flex; gap: 15px; width: 80%; max-width: 300px;
         }
         button {
-            padding: 15px 30px; border: none; border-radius: 25px; font-weight: bold; font-size: 16px; cursor: pointer;
-            transition: all 0.2s ease;
+            padding: 16px 20px; border: none; border-radius: 30px; font-weight: bold; font-size: 16px; cursor: pointer;
+            transition: all 0.2s ease; width: 100%;
         }
-        .btn-user { background: #333; color: white; border: 1px solid #555; }
-        .btn-call { background: #2ed573; color: white; flex: 2; }
-        .btn-mute { background: #ff4757; color: white; flex: 1; display: none; }
+        .btn-user { background: #333; color: white; border: 1px solid #555; width: auto; padding: 15px 40px; }
+        .btn-call { background: #2ed573; color: white; }
+        .btn-mute { background: #ff4757; color: white; display: none; }
         .btn-mute.muted { background: #ffa502; color: black; }
+        
+        /* Ocultamos los elementos de audio HTML ya que no necesitan ser visibles */
+        audio { display: none; }
     </style>
 </head>
 <body>
@@ -44,18 +49,23 @@
     <!-- 1. Pantalla de Selección de Usuario -->
     <div id="setupScreen" class="setup-screen">
         <h2>¿Quién eres?</h2>
-        <button class="btn-user" onclick="iniciarApp('daniel')">Soy Daniel (PC/Android)</button>
-        <button class="btn-user" onclick="iniciarApp('gisel')">Soy Gisel (iPhone)</button>
+        <button class="btn-user" onclick="iniciarApp('daniel')">Soy Daniel</button>
+        <button class="btn-user" onclick="iniciarApp('gisel')">Soy Gisel</button>
     </div>
 
     <!-- 2. Pantalla de la Llamada -->
     <div id="callScreen" class="call-screen">
-        <div id="timer" class="timer-container">TIEMPO: 00:00</div>
-        <video id="remoteVideo" autoplay playsinline></video>
-        <video id="localVideo" autoplay playsinline muted></video>
+        <div class="avatar-container">📞</div>
+        <div id="status" class="status-text">Conectado al canal</div>
+        <div id="timer" class="timer-container">00:00</div>
+        
+        <!-- Elementos nativos para reproducir el audio de la llamada -->
+        <audio id="remoteAudio" autoplay></audio>
+        <audio id="localAudio" autoplay muted></audio>
+        
         <div class="controls">
             <button class="btn-mute" id="btnMute">Silenciar</button>
-            <button class="btn-call" id="btnAccion">Iniciar Cámara y Llamar</button>
+            <button class="btn-call" id="btnAccion">Llamar</button>
         </div>
     </div>
 
@@ -71,12 +81,12 @@
         let segundosTranscurridos = 0;
         let microfonoActivo = true;
 
-        // Lista extendida de servidores STUN para saltar firewalls de operadoras
         const rtcConfig = { 
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' }
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun.services.mozilla.com' }
             ] 
         };
 
@@ -94,36 +104,33 @@
             configurarSenales();
         }
 
-        // Corrección del error de sintaxis en los parámetros
-        function solicitarMedios(restricciones, callbackExito) {
-            navigator.mediaDevices.getUserMedia(restricciones)
+        // Modificado: Ahora pide ÚNICAMENTE audio de forma nativa
+        function solicitarMicrofono(callbackExito) {
+            console.log("[AUDIO] Solicitando acceso exclusivo al micrófono...");
+            navigator.mediaDevices.getUserMedia({ video: false, audio: true })
                 .then(stream => {
+                    console.log("[AUDIO] Acceso al micrófono concedido.");
                     localStream = stream;
-                    document.getElementById('localVideo').srcObject = stream;
+                    document.getElementById('localAudio').srcObject = stream;
                     document.getElementById('btnMute').style.display = 'block';
                     callbackExito();
                 })
                 .catch(error => {
-                    console.warn("Fallo pidiendo hardware completo:", error.name);
-                    if (restricciones.video) {
-                        solicitarMedios({ video: false, audio: true }, callbackExito);
-                    } else {
-                        alert("Error: No se ha detectado ningún micrófono activo.");
-                    }
+                    console.error("[ERROR] No se pudo acceder al micrófono:", error);
+                    alert("Error crítico: No se puede iniciar la llamada sin permisos para el micrófono.");
                 });
         }
 
         function iniciarTemporizador() {
             if (tiempoIntervalo) clearInterval(tiempoIntervalo);
             segundosTranscurridos = 0;
-            const contenedorTimer = document.getElementById('timer');
-            contenedorTimer.style.display = 'block';
+            document.getElementById('status').innerText = "EN LLAMADA";
 
             tiempoIntervalo = setInterval(() => {
                 segundosTranscurridos++;
                 const mins = String(Math.floor(segundosTranscurridos / 60)).padStart(2, '0');
                 const secs = String(segundosTranscurridos % 60).padStart(2, '0');
-                contenedorTimer.innerText = `EN LLAMADA: ${mins}:${secs}`;
+                document.getElementById('timer').innerText = `${mins}:${secs}`;
             }, 1000);
         }
 
@@ -147,7 +154,8 @@
         });
 
         document.getElementById('btnAccion').addEventListener('click', () => {
-            solicitarMedios({ video: true, audio: true }, () => {
+            document.getElementById('status').innerText = "Llamando...";
+            solicitarMicrofono(() => {
                 peerConnection = new RTCPeerConnection(rtcConfig);
                 
                 if (localStream) {
@@ -161,7 +169,8 @@
                 };
 
                 peerConnection.ontrack = event => {
-                    document.getElementById('remoteVideo').srcObject = event.streams[0];
+                    console.log("[WEBRTC] Recibiendo audio remoto...");
+                    document.getElementById('remoteAudio').srcObject = event.streams[0];
                 };
 
                 peerConnection.createOffer()
@@ -178,7 +187,8 @@
                 const payload = data.payload;
                 
                 if (payload.type === 'offer') {
-                    solicitarMedios({ video: true, audio: true }, () => {
+                    document.getElementById('status').innerText = "Llamada entrante...";
+                    solicitarMicrofono(() => {
                         peerConnection = new RTCPeerConnection(rtcConfig);
                         
                         if (localStream) {
@@ -192,7 +202,7 @@
                         };
 
                         peerConnection.ontrack = event => {
-                            document.getElementById('remoteVideo').srcObject = event.streams[0];
+                            document.getElementById('remoteAudio').srcObject = event.streams[0];
                         };
 
                         peerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp))
